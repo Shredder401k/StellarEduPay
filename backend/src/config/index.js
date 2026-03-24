@@ -53,6 +53,22 @@ const CONFIRMATION_THRESHOLD = parseInt(process.env.CONFIRMATION_THRESHOLD || '2
 // ── Polling ───────────────────────────────────────────────────────────────────
 const POLL_INTERVAL_MS = parseInt(process.env.POLL_INTERVAL_MS || '30000', 10);
 
+// ── Payment Limits ────────────────────────────────────────────────────────────
+// Minimum payment amount (default: 0.01 XLM/USDC)
+const MIN_PAYMENT_AMOUNT = parseFloat(process.env.MIN_PAYMENT_AMOUNT || '0.01');
+
+// Maximum payment amount (default: 100000 XLM/USDC)
+const MAX_PAYMENT_AMOUNT = parseFloat(process.env.MAX_PAYMENT_AMOUNT || '100000');
+
+// Validate payment limits
+if (MIN_PAYMENT_AMOUNT < 0) {
+  throw new Error('[Config] MIN_PAYMENT_AMOUNT must be a positive number');
+}
+
+if (MAX_PAYMENT_AMOUNT <= MIN_PAYMENT_AMOUNT) {
+  throw new Error('[Config] MAX_PAYMENT_AMOUNT must be greater than MIN_PAYMENT_AMOUNT');
+}
+
 // ── Freeze to prevent accidental mutation at runtime ─────────────────────────
 const config = Object.freeze({
   PORT,
@@ -64,6 +80,8 @@ const config = Object.freeze({
   USDC_ISSUER,
   CONFIRMATION_THRESHOLD,
   POLL_INTERVAL_MS,
+  MIN_PAYMENT_AMOUNT,
+  MAX_PAYMENT_AMOUNT,
 });
 
 module.exports = config;

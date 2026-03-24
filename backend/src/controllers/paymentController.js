@@ -3,29 +3,20 @@
 const Payment = require('../models/paymentModel');
 const PaymentIntent = require('../models/paymentIntentModel');
 const Student = require('../models/studentModel');
-const { syncPayments, verifyTransaction, finalizeConfirmedPayments } = require('../services/stellarService');
-const crypto = require('crypto');
-const Payment = require('../models/paymentModel');
-const PaymentIntent = require('../models/paymentIntentModel');
-const Student = require('../models/studentModel');
+const PendingVerification = require('../models/pendingVerificationModel');
 const {
   syncPayments,
   verifyTransaction,
   recordPayment,
   finalizeConfirmedPayments,
 } = require('../services/stellarService');
-const Student = require('../models/studentModel');
-const PaymentIntent = require('../models/paymentIntentModel');
-const { syncPayments, verifyTransaction, recordPayment, finalizeConfirmedPayments } = require('../services/stellarService');
-const PaymentIntent = require('../models/paymentIntentModel');
-const Student = require('../models/studentModel');
-const PendingVerification = require('../models/pendingVerificationModel');
-const { syncPayments, verifyTransaction, recordPayment, finalizeConfirmedPayments } = require('../services/stellarService');
 const { queueForRetry } = require('../services/retryService');
 const { SCHOOL_WALLET, ACCEPTED_ASSETS } = require('../config/stellarConfig');
+const { getPaymentLimits } = require('../utils/paymentLimits');
+const crypto = require('crypto');
 
 // Permanent error codes that should NOT be retried
-const PERMANENT_FAIL_CODES = ['TX_FAILED', 'MISSING_MEMO', 'INVALID_DESTINATION', 'UNSUPPORTED_ASSET'];
+const PERMANENT_FAIL_CODES = ['TX_FAILED', 'MISSING_MEMO', 'INVALID_DESTINATION', 'UNSUPPORTED_ASSET', 'AMOUNT_TOO_LOW', 'AMOUNT_TOO_HIGH'];
 
 function wrapStellarError(err) {
   if (!err.code) {
@@ -38,6 +29,7 @@ function wrapStellarError(err) {
 // GET /api/payments/instructions/:studentId
 async function getPaymentInstructions(req, res, next) {
   try {
+    const limits = getPaymentLimits();
     res.json({
       walletAddress: SCHOOL_WALLET,
       memo: req.params.studentId,
@@ -46,6 +38,10 @@ async function getPaymentInstructions(req, res, next) {
         type: a.type,
         displayName: a.displayName,
       })),
+      paymentLimits: {
+        min: limits.min,
+        max: limits.max,
+      },
       note: 'Include the payment intent memo exactly when sending payment to ensure your fees are credited.',
     });
   } catch (err) {
@@ -60,6 +56,16 @@ async function createPaymentIntent(req, res, next) {
     const student = await Student.findOne({ studentId });
     if (!student) {
       return res.status(404).json({ error: 'Student not found', code: 'NOT_FOUND' });
+    }
+
+    // Validate that the student's fee amount is within payment limits
+    const { validatePaymentAmount } = require('../utils/paymentLimits');
+    const limitValidation = validatePaymentAmount(student.feeAmount);
+    if (!limitValidation.valid) {
+      return res.status(400).json({
+        error: limitValidation.error,
+        code: limitValidation.code,
+      });
     }
 
     const memo = crypto.randomBytes(4).toString('hex').toUpperCase();
@@ -94,7 +100,7 @@ async function createPaymentIntent(req, res, next) {
  *
  * Error responses follow the global error handler format:
  *   { error: string, code: string }
- *   400 — TX_FAILED | MISSING_MEMO | INVALID_DESTINATION | UNSUPPORTED_ASSET
+ *   400 — TX_FAILED | MISSING_MEMO | INVALID_DESTINATION | UNSUPPORTED_ASSET | AMOUNT_TOO_LOW | AMOUNT_TOO_HIGH
  *   409 — DUPLICATE_TX
  *   404 — transaction not found / no valid payment
  *   502 — STELLAR_NETWORK_ERROR
@@ -104,7 +110,6 @@ async function verifyPayment(req, res, next) {
     const { txHash } = req.body;
 
     // Check if we've already recorded this transaction
-    // Check for already-processed or already-queued transactions
     const existing = await Payment.findOne({ txHash });
     if (existing) {
       const err = new Error(`Transaction ${txHash} has already been processed`);
@@ -117,9 +122,8 @@ async function verifyPayment(req, res, next) {
     try {
       result = await verifyTransaction(txHash);
     } catch (stellarErr) {
-      const knownFailCodes = ['TX_FAILED', 'MISSING_MEMO', 'INVALID_DESTINATION', 'UNSUPPORTED_ASSET'];
       // Record a failed payment entry for known failure codes so we have an audit trail
-      if (knownFailCodes.includes(stellarErr.code)) {
+      if (PERMANENT_FAIL_CODES.includes(stellarErr.code)) {
         await Payment.create({
           studentId: 'unknown',
           txHash,
@@ -127,8 +131,16 @@ async function verifyPayment(req, res, next) {
           status: 'failed',
           feeValidationStatus: 'unknown',
         }).catch(() => {}); // non-fatal — don't mask the original error
+        return next(stellarErr);
       }
-      return next(knownFailCodes.includes(stellarErr.code) ? stellarErr : wrapStellarError(stellarErr));
+
+      // Transient Stellar network error — cache for retry so the tx is not lost
+      await queueForRetry(txHash, req.body.studentId || null, stellarErr.message);
+      return res.status(202).json({
+        message: 'Stellar network is temporarily unavailable. Your transaction has been queued and will be verified automatically once the network recovers.',
+        txHash,
+        status: 'queued_for_retry',
+      });
     }
 
     // verifyTransaction returns null if the tx exists but has no valid payment to the school wallet
@@ -140,51 +152,11 @@ async function verifyPayment(req, res, next) {
     }
 
     // Persist the verified payment
-    await recordPayment({
-      studentId: result.studentId,
-    } catch (err) {
-      const failCodes = ['TX_FAILED', 'MISSING_MEMO', 'INVALID_DESTINATION', 'UNSUPPORTED_ASSET'];
-      if (failCodes.includes(err.code)) {
-        // Record a failed payment for audit purposes
-        await Payment.create({
-          studentId: 'unknown',
-          txHash,
-          transactionHash: txHash,
-          amount: 0,
-          status: 'failed',
-          createdAt: new Date(),
-        }).catch(() => {});
-      if (PERMANENT_FAIL_CODES.includes(err.code)) {
-        // Permanently invalid — record as failed and surface the error
-        await Payment.create({ studentId: 'unknown', txHash, amount: 0, status: 'failed' }).catch(() => {});
-        return next(err);
-      }
-
-      // Transient Stellar network error — cache for retry so the tx is not lost
-      await queueForRetry(txHash, req.body.studentId || null, err.message);
-      return res.status(202).json({
-        message: 'Stellar network is temporarily unavailable. Your transaction has been queued and will be verified automatically once the network recovers.',
-        txHash,
-        status: 'queued_for_retry',
-      });
-    }
-
-    if (!result) {
-      return res.status(404).json({ error: 'Transaction not found or invalid' });
-    }
-
-    if (!result) {
-      const err = new Error('Transaction not found or invalid');
-      err.code = 'NOT_FOUND';
-      err.status = 404;
-      return next(err);
-    }
     const now = new Date();
-
     await recordPayment({
       studentId: result.studentId || result.memo,
       txHash: result.hash,
-      transactionHash: result.hash,   // audit: canonical on-chain reference
+      transactionHash: result.hash,
       amount: result.amount,
       feeAmount: result.expectedAmount || result.feeAmount,
       feeValidationStatus: result.feeValidation.status,
@@ -194,10 +166,8 @@ async function verifyPayment(req, res, next) {
       senderAddress: result.senderAddress || null,
       ledger: result.ledger || null,
       confirmationStatus: 'confirmed',
-      confirmedAt: new Date(result.date),
-      confirmedAt: new Date(result.date), // audit: ledger confirmation time
-      verifiedAt: now,                    // audit: when this endpoint was called
       confirmedAt: result.date ? new Date(result.date) : new Date(),
+      verifiedAt: now,
     });
 
     res.json({
@@ -224,8 +194,6 @@ async function syncAllPayments(req, res, next) {
     res.json({ message: 'Sync complete' });
   } catch (err) {
     const wrapped = wrapStellarError(err);
-    // If the sync itself fails due to a network outage, report it clearly
-    // (individual tx caching happens inside stellarService during sync)
     next(wrapped);
   }
 }
@@ -259,6 +227,20 @@ async function getAcceptedAssets(req, res, next) {
         type: a.type,
         displayName: a.displayName,
       })),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// GET /api/payments/limits
+async function getPaymentLimitsEndpoint(req, res, next) {
+  try {
+    const limits = getPaymentLimits();
+    res.json({
+      min: limits.min,
+      max: limits.max,
+      message: `Payment amounts must be between ${limits.min} and ${limits.max}`,
     });
   } catch (err) {
     next(err);
@@ -356,10 +338,10 @@ module.exports = {
   finalizePayments,
   getStudentPayments,
   getAcceptedAssets,
+  getPaymentLimitsEndpoint,
   getOverpayments,
   getStudentBalance,
   getSuspiciousPayments,
   getPendingPayments,
-  finalizePayments,
   getRetryQueue,
 };
