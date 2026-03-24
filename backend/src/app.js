@@ -37,6 +37,7 @@ app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
     DUPLICATE_TX: 409,
     NOT_FOUND: 404,
     VALIDATION_ERROR: 400,
+    MISSING_IDEMPOTENCY_KEY: 400,
     STELLAR_NETWORK_ERROR: 502,
   };
   const status = statusMap[err.code] || err.status || 500;

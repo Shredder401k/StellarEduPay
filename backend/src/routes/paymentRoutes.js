@@ -15,6 +15,7 @@ const {
   getPendingPayments,
   finalizePayments,
 } = require('../controllers/paymentController');
+const idempotency = require('../middleware/idempotency');
 
 router.get('/accepted-assets', getAcceptedAssets);
 router.get('/overpayments', getOverpayments);
@@ -23,9 +24,13 @@ router.get('/pending', getPendingPayments);
 router.get('/balance/:studentId', getStudentBalance);
 router.get('/instructions/:studentId', getPaymentInstructions);
 router.get('/:studentId', getStudentPayments);
-router.post('/verify', verifyPayment);
+
+// Idempotency enforced on mutating endpoints that create records
+router.post('/intent', idempotency, createPaymentIntent);
+router.post('/verify', idempotency, verifyPayment);
+
+// Admin/internal — no idempotency key required
 router.post('/sync', syncAllPayments);
 router.post('/finalize', finalizePayments);
-router.post('/intent', createPaymentIntent);
 
 module.exports = router;

@@ -35,6 +35,11 @@ jest.mock('../backend/src/models/paymentIntentModel', () => ({
   findByIdAndUpdate: jest.fn().mockResolvedValue({}),
 }));
 
+jest.mock('../backend/src/models/idempotencyKeyModel', () => ({
+  findOne: jest.fn().mockResolvedValue(null), // no cached response by default
+  create: jest.fn().mockResolvedValue({}),
+}));
+
 jest.mock('../backend/src/models/feeStructureModel', () => {
   const mockFees = [
     { className: '5A', feeAmount: 200, description: 'Class 5A fees', academicYear: '2026', isActive: true },
@@ -89,7 +94,10 @@ describe('Full payment flow', () => {
   });
 
   test('Step 3 — verify transaction after payment', async () => {
-    const res = await request(app).post('/api/payments/verify').send({ txHash: 'abc123' });
+    const res = await request(app)
+      .post('/api/payments/verify')
+      .set('Idempotency-Key', 'flow-verify-abc123')
+      .send({ txHash: 'abc123' });
     expect(res.status).toBe(200);
     expect(res.body.feeValidation.status).toBe('valid');
   });
@@ -145,7 +153,10 @@ describe('Payment API', () => {
   test('POST /api/payments/verify — returns 409 for duplicate transaction', async () => {
     const Payment = require('../backend/src/models/paymentModel');
     Payment.findOne.mockResolvedValueOnce({ txHash: 'abc123' });
-    const res = await request(app).post('/api/payments/verify').send({ txHash: 'abc123' });
+    const res = await request(app)
+      .post('/api/payments/verify')
+      .set('Idempotency-Key', 'test-verify-dup')
+      .send({ txHash: 'abc123' });
     expect(res.status).toBe(409);
     expect(res.body).toHaveProperty('code', 'DUPLICATE_TX');
   });
@@ -195,7 +206,10 @@ describe('Fee Structure API', () => {
 
 describe('Payment Intent API', () => {
   test('POST /api/payments/intent — creates a payment intent', async () => {
-    const res = await request(app).post('/api/payments/intent').send({ studentId: 'STU001' });
+    const res = await request(app)
+      .post('/api/payments/intent')
+      .set('Idempotency-Key', 'test-intent-stu001')
+      .send({ studentId: 'STU001' });
     expect(res.status).toBe(201);
     expect(res.body).toHaveProperty('memo');
     expect(res.body).toHaveProperty('amount', 200);
@@ -205,7 +219,98 @@ describe('Payment Intent API', () => {
   test('POST /api/payments/intent — 404 for unknown student', async () => {
     const Student = require('../backend/src/models/studentModel');
     Student.findOne.mockResolvedValueOnce(null);
-    const res = await request(app).post('/api/payments/intent').send({ studentId: 'UNKNOWN' });
+    const res = await request(app)
+      .post('/api/payments/intent')
+      .set('Idempotency-Key', 'test-intent-unknown')
+      .send({ studentId: 'UNKNOWN' });
     expect(res.status).toBe(404);
+  });
+});
+
+// ─── Idempotency ──────────────────────────────────────────────────────────────
+
+describe('Idempotency', () => {
+  let IdempotencyKey;
+
+  beforeEach(() => {
+    IdempotencyKey = require('../backend/src/models/idempotencyKeyModel');
+    // Reset to default: no cached record exists
+    IdempotencyKey.findOne.mockResolvedValue(null);
+    IdempotencyKey.create.mockResolvedValue({});
+  });
+
+  test('POST /api/payments/intent — 400 when Idempotency-Key header is missing', async () => {
+    const res = await request(app).post('/api/payments/intent').send({ studentId: 'STU001' });
+    expect(res.status).toBe(400);
+    expect(res.body).toHaveProperty('code', 'MISSING_IDEMPOTENCY_KEY');
+  });
+
+  test('POST /api/payments/verify — 400 when Idempotency-Key header is missing', async () => {
+    const res = await request(app).post('/api/payments/verify').send({ txHash: 'abc123' });
+    expect(res.status).toBe(400);
+    expect(res.body).toHaveProperty('code', 'MISSING_IDEMPOTENCY_KEY');
+  });
+
+  test('POST /api/payments/intent — returns cached response on duplicate key', async () => {
+    const cachedBody = { studentId: 'STU001', amount: 200, memo: 'CACHED1', status: 'pending' };
+    IdempotencyKey.findOne.mockResolvedValueOnce({
+      key: 'dupe-intent-key',
+      requestPath: '/intent',
+      responseStatus: 201,
+      responseBody: cachedBody,
+    });
+
+    const PaymentIntent = require('../backend/src/models/paymentIntentModel');
+    PaymentIntent.create.mockClear();
+
+    const res = await request(app)
+      .post('/api/payments/intent')
+      .set('Idempotency-Key', 'dupe-intent-key')
+      .send({ studentId: 'STU001' });
+
+    expect(res.status).toBe(201);
+    expect(res.body).toEqual(cachedBody);
+    // Cached — controller should never have been reached
+    expect(PaymentIntent.create).not.toHaveBeenCalled();
+  });
+
+  test('POST /api/payments/verify — returns cached response on duplicate key', async () => {
+    const cachedBody = { hash: 'abc123', memo: 'STU001', amount: 200, feeValidation: { status: 'valid' } };
+    IdempotencyKey.findOne.mockResolvedValueOnce({
+      key: 'dupe-verify-key',
+      requestPath: '/verify',
+      responseStatus: 200,
+      responseBody: cachedBody,
+    });
+
+    const res = await request(app)
+      .post('/api/payments/verify')
+      .set('Idempotency-Key', 'dupe-verify-key')
+      .send({ txHash: 'abc123' });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(cachedBody);
+  });
+
+  test('POST /api/payments/intent — caches response after first successful call', async () => {
+    IdempotencyKey.create.mockClear();
+
+    await request(app)
+      .post('/api/payments/intent')
+      .set('Idempotency-Key', 'new-intent-key')
+      .send({ studentId: 'STU001' });
+
+    expect(IdempotencyKey.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        key: 'new-intent-key',
+        requestPath: '/intent',
+        responseStatus: 201,
+      })
+    );
+  });
+
+  test('POST /api/payments/sync — does NOT require Idempotency-Key', async () => {
+    const res = await request(app).post('/api/payments/sync');
+    expect(res.status).toBe(200);
   });
 });
