@@ -1,33 +1,17 @@
+'use strict';
+
 const StellarSdk = require('@stellar/stellar-sdk');
+const config = require('./index');
 
-// Validate required environment variables at startup
-const REQUIRED_ENV = ['SCHOOL_WALLET_ADDRESS', 'MONGO_URI'];
-const missing = REQUIRED_ENV.filter(k => !process.env[k]);
-if (missing.length) {
-  throw new Error(`Missing required environment variables: ${missing.join(', ')}`);
-}
+const server = new StellarSdk.Horizon.Server(config.HORIZON_URL);
 
-const isTestnet = process.env.STELLAR_NETWORK !== 'mainnet';
-
-const HORIZON_URL = process.env.HORIZON_URL || (
-  isTestnet ? 'https://horizon-testnet.stellar.org' : 'https://horizon.stellar.org'
-);
-
-const server = new StellarSdk.Horizon.Server(HORIZON_URL);
-
-const networkPassphrase = isTestnet
+const networkPassphrase = config.IS_TESTNET
   ? StellarSdk.Networks.TESTNET
   : StellarSdk.Networks.PUBLIC;
 
-const SCHOOL_WALLET = process.env.SCHOOL_WALLET_ADDRESS;
+const SCHOOL_WALLET = config.SCHOOL_WALLET_ADDRESS;
 
-const USDC_ISSUER = process.env.USDC_ISSUER || (
-  isTestnet
-    ? 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5'
-    : 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN'
-);
-
-// Accepted assets configuration — add new assets here to support them
+// Accepted assets — add new entries here to support additional tokens
 const ACCEPTED_ASSETS = {
   XLM: {
     code: 'XLM',
@@ -39,7 +23,7 @@ const ACCEPTED_ASSETS = {
   USDC: {
     code: 'USDC',
     type: 'credit_alphanum4',
-    issuer: USDC_ISSUER,
+    issuer: config.USDC_ISSUER,
     displayName: 'USD Coin',
     decimals: 7,
   },
@@ -59,7 +43,9 @@ function isAcceptedAsset(assetCode, assetType) {
 }
 
 /**
- * Resolve a Stellar SDK Asset from an accepted‐asset code.
+ * Resolve a Stellar SDK Asset from an accepted-asset code.
+ * @param {string} assetCode
+ * @returns {StellarSdk.Asset|null}
  */
 function resolveAsset(assetCode) {
   const cfg = ACCEPTED_ASSETS[assetCode];
@@ -68,10 +54,7 @@ function resolveAsset(assetCode) {
   return new StellarSdk.Asset(cfg.code, cfg.issuer);
 }
 
-// Minimum number of ledgers that must be closed after a transaction's ledger
-// before it is considered final. Stellar closes a ledger ~every 5 seconds;
-// 2 ledgers ≈ 10 seconds of additional safety margin.
-const CONFIRMATION_THRESHOLD = parseInt(process.env.CONFIRMATION_THRESHOLD || '2', 10);
+const CONFIRMATION_THRESHOLD = config.CONFIRMATION_THRESHOLD;
 
 module.exports = {
   server,

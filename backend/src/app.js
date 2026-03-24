@@ -1,4 +1,5 @@
 require('dotenv').config();
+const config = require('./config');
 const express = require('express');
 const cors = require('cors');
 const mongoose = require('mongoose');
@@ -13,7 +14,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-mongoose.connect(process.env.MONGO_URI || 'mongodb://localhost:27017/stellaredupay')
+mongoose.connect(config.MONGO_URI)
   .then(() => {
     console.log('MongoDB connected');
     startPolling();
@@ -43,7 +44,7 @@ app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
   res.status(status).json({ error: err.message, code: err.code || 'INTERNAL_ERROR' });
 });
 
-const PORT = process.env.PORT || 5000;
+const PORT = config.PORT;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 module.exports = app;

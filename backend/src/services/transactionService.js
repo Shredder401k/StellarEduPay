@@ -1,6 +1,5 @@
 const { syncPayments } = require('./stellarService');
-
-const POLL_INTERVAL_MS = parseInt(process.env.POLL_INTERVAL_MS, 10) || 30000;
+const { POLL_INTERVAL_MS } = require('../config');
 
 let _timer = null;
 

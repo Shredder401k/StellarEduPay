@@ -1,12 +1,12 @@
+'use strict';
+
 const Payment = require('../models/paymentModel');
-const { syncPayments, verifyTransaction, finalizeConfirmedPayments } = require('../services/stellarService');
 const PaymentIntent = require('../models/paymentIntentModel');
 const Student = require('../models/studentModel');
-const { syncPayments, verifyTransaction } = require('../services/stellarService');
+const { syncPayments, verifyTransaction, finalizeConfirmedPayments } = require('../services/stellarService');
 const { SCHOOL_WALLET, ACCEPTED_ASSETS } = require('../config/stellarConfig');
 const crypto = require('crypto');
 
-// Tag errors that originate from Stellar network calls
 function wrapStellarError(err) {
   if (!err.code) {
     err.code = 'STELLAR_NETWORK_ERROR';
@@ -40,14 +40,13 @@ async function createPaymentIntent(req, res) {
     const student = await Student.findOne({ studentId });
     if (!student) return res.status(404).json({ error: 'Student not found' });
 
-    // Generate a unique memo for this payment
     const memo = crypto.randomBytes(4).toString('hex').toUpperCase();
 
     const intent = await PaymentIntent.create({
       studentId,
       amount: student.feeAmount,
       memo,
-      expiresAt: new Date(Date.now() + 2 * 60 * 60 * 1000), // 2 hours
+      expiresAt: new Date(Date.now() + 2 * 60 * 60 * 1000),
     });
 
     res.status(201).json(intent);
@@ -84,16 +83,12 @@ async function verifyPayment(req, res, next) {
       return next(failCodes.includes(err.code) ? err : wrapStellarError(err));
     }
 
-    await recordPayment({
-      studentId: result.memo,
-      txHash: result.hash,
-      amount: result.amount,
-      feeAmount: result.feeAmount,
-      feeValidationStatus: result.feeValidation.status,
-      status: 'confirmed',
-      memo: result.memo,
-      confirmedAt: new Date(result.date),
-    });
+    if (!result) {
+      const err = new Error('Transaction not found or invalid');
+      err.code = 'NOT_FOUND';
+      err.status = 404;
+      return next(err);
+    }
 
     res.json(result);
   } catch (err) {
@@ -139,8 +134,7 @@ async function getAcceptedAssets(req, res, next) {
 // GET /api/payments/overpayments
 async function getOverpayments(req, res) {
   try {
-    const overpayments = await Payment.find({ feeValidationStatus: 'overpaid' })
-      .sort({ confirmedAt: -1 });
+    const overpayments = await Payment.find({ feeValidationStatus: 'overpaid' }).sort({ confirmedAt: -1 });
     const totalExcess = overpayments.reduce((sum, p) => sum + (p.excessAmount || 0), 0);
     res.json({ count: overpayments.length, totalExcess, overpayments });
   } catch (err) {
@@ -151,7 +145,6 @@ async function getOverpayments(req, res) {
 // GET /api/payments/balance/:studentId
 async function getStudentBalance(req, res) {
   try {
-    const Student = require('../models/studentModel');
     const { studentId } = req.params;
     const student = await Student.findOne({ studentId });
     if (!student) return res.status(404).json({ error: 'Student not found' });
@@ -211,15 +204,16 @@ async function finalizePayments(req, res) {
   }
 }
 
-module.exports = { getPaymentInstructions, verifyPayment, syncAllPayments, getStudentPayments, getAcceptedAssets, getOverpayments, getStudentBalance, getSuspiciousPayments, getPendingPayments, finalizePayments };
-module.exports = { getPaymentInstructions, verifyPayment, syncAllPayments, getStudentPayments, getAcceptedAssets, getOverpayments, getStudentBalance, getSuspiciousPayments };
-module.exports = { getPaymentInstructions, verifyPayment, syncAllPayments, getStudentPayments, getAcceptedAssets, getOverpayments, getStudentBalance };
-module.exports = { getPaymentInstructions, verifyPayment, syncAllPayments, getStudentPayments, getAcceptedAssets, getOverpayments };
 module.exports = {
   getPaymentInstructions,
+  createPaymentIntent,
   verifyPayment,
   syncAllPayments,
   getStudentPayments,
   getAcceptedAssets,
-  createPaymentIntent,
+  getOverpayments,
+  getStudentBalance,
+  getSuspiciousPayments,
+  getPendingPayments,
+  finalizePayments,
 };

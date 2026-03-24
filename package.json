@@ -11,7 +11,8 @@
     "supertest": "^6.3.0"
   },
   "jest": {
-    "modulePaths": [
+    "moduleDirectories": [
+      "node_modules",
       "backend/node_modules"
     ]
   }

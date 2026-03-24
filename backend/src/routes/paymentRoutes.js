@@ -1,16 +1,7 @@
+'use strict';
+
 const express = require('express');
 const router = express.Router();
-const { getPaymentInstructions, verifyPayment, syncAllPayments, getStudentPayments, getAcceptedAssets } = require('../controllers/paymentController');
-const { validateStudentIdParam, validateVerifyPayment } = require('../middleware/validate');
-
-router.get('/accepted-assets', getAcceptedAssets);
-router.get('/instructions/:studentId', validateStudentIdParam, getPaymentInstructions);
-router.get('/:studentId', validateStudentIdParam, getStudentPayments);
-router.post('/verify', validateVerifyPayment, verifyPayment);
-const { getPaymentInstructions, verifyPayment, syncAllPayments, getStudentPayments, getAcceptedAssets, getOverpayments, getStudentBalance, getSuspiciousPayments, getPendingPayments, finalizePayments } = require('../controllers/paymentController');
-const { getPaymentInstructions, verifyPayment, syncAllPayments, getStudentPayments, getAcceptedAssets, getOverpayments, getStudentBalance, getSuspiciousPayments } = require('../controllers/paymentController');
-const { getPaymentInstructions, verifyPayment, syncAllPayments, getStudentPayments, getAcceptedAssets, getOverpayments, getStudentBalance } = require('../controllers/paymentController');
-const { getPaymentInstructions, verifyPayment, syncAllPayments, getStudentPayments, getAcceptedAssets, getOverpayments } = require('../controllers/paymentController');
 const {
   getPaymentInstructions,
   verifyPayment,
@@ -18,6 +9,11 @@ const {
   getStudentPayments,
   getAcceptedAssets,
   createPaymentIntent,
+  getOverpayments,
+  getStudentBalance,
+  getSuspiciousPayments,
+  getPendingPayments,
+  finalizePayments,
 } = require('../controllers/paymentController');
 
 router.get('/accepted-assets', getAcceptedAssets);
