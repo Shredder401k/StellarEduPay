@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 
 const paymentSchema = new mongoose.Schema(
   {
-    studentId:            { type: String, required: true, index: true },
+    studentId:            { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true },
     txHash:               { type: String, required: true, unique: true, index: true },
     amount:               { type: Number, required: true },
     feeAmount:            { type: Number, default: null },
@@ -35,6 +35,8 @@ const paymentSchema = new mongoose.Schema(
     toObject: { virtuals: true }
   }
 );
+
+paymentSchema.index({ studentId: 1, createdAt: -1 });
 
 paymentSchema.virtual('explorerUrl').get(function() {
   if (!this.transactionHash) return null;

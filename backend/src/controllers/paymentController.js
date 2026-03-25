@@ -56,7 +56,7 @@ async function createPaymentIntent(req, res, next) {
     
     // We now use the Payment model to track the initial 'PENDING' intent.
     const payment = await Payment.create({
-      studentId,
+      studentId: student._id,
       amount: student.feeAmount,
       memo,
       status: 'PENDING',
@@ -66,7 +66,7 @@ async function createPaymentIntent(req, res, next) {
     res.status(201).json({
       memo: payment.memo,
       amount: payment.amount,
-      studentId: payment.studentId,
+      studentId: student.studentId,
       paymentId: payment._id
     });
   } catch (err) {
@@ -95,8 +95,12 @@ async function submitTransaction(req, res, next) {
     // Update or create the Payment record with SUBMITTED status
     let paymentRecord = await Payment.findOne({ memo, status: 'PENDING' }).sort({ createdAt: -1 });
     if (!paymentRecord) {
+      const studentObj = await Student.findOne({ studentId: memo });
+      if (!studentObj) {
+        return res.status(404).json({ error: 'Associated student not found in the database. Cannot process transaction.' });
+      }
       paymentRecord = new Payment({
-        studentId: memo,
+        studentId: studentObj._id,
         memo: memo,
         amount: 0, // Gets corrected on success
       });
@@ -158,15 +162,7 @@ async function verifyPayment(req, res, next) {
       result = await verifyTransaction(txHash);
     } catch (stellarErr) {
       const knownFailCodes = ['TX_FAILED', 'MISSING_MEMO', 'INVALID_DESTINATION', 'UNSUPPORTED_ASSET'];
-      if (knownFailCodes.includes(stellarErr.code)) {
-        await Payment.create({
-          studentId: 'unknown',
-          transactionHash: txHash,
-          amount: 0,
-          status: 'FAILED',
-          feeValidationStatus: 'unknown',
-        }).catch(() => {});
-      }
+      // Ensure no 'orphan' payments can be created in the system by removing dummy records
       return next(knownFailCodes.includes(stellarErr.code) ? stellarErr : wrapStellarError(stellarErr));
     }
 
@@ -179,8 +175,14 @@ async function verifyPayment(req, res, next) {
 
     const now = new Date();
 
+    const studentStrId = result.studentId || result.memo;
+    const studentObj = await Student.findOne({ studentId: studentStrId });
+    if (!studentObj) {
+      return res.status(404).json({ error: 'Associated student not found. Cannot record transaction.' });
+    }
+
     await recordPayment({
-      studentId: result.studentId || result.memo,
+      studentId: studentObj._id,
       transactionHash: result.hash,
       amount: result.amount,
       feeAmount: result.expectedAmount || result.feeAmount,
@@ -212,7 +214,7 @@ async function verifyPayment(req, res, next) {
     const failCodes = ['TX_FAILED', 'MISSING_MEMO', 'INVALID_DESTINATION', 'UNSUPPORTED_ASSET'];
     if (failCodes.includes(err.code)) {
       if (PERMANENT_FAIL_CODES.includes(err.code)) {
-        await Payment.create({ studentId: 'unknown', transactionHash: req.body.txHash, amount: 0, status: 'FAILED' }).catch(() => {});
+        // Ensure no 'orphan' payments can be created in the system
         return next(err);
       }
 
@@ -251,7 +253,13 @@ async function finalizePayments(req, res, next) {
 // GET /api/payments/:studentId
 async function getStudentPayments(req, res, next) {
   try {
-    const payments = await Payment.find({ studentId: req.params.studentId }).sort({ confirmedAt: -1 });
+    const student = await Student.findOne({ studentId: req.params.studentId });
+    if (!student) {
+      return res.status(404).json({ error: 'Student not found', code: 'NOT_FOUND' });
+    }
+    const payments = await Payment.find({ studentId: student._id })
+      .sort({ confirmedAt: -1 })
+      .populate('studentId', 'name email studentRegNumber');
     res.json(payments);
   } catch (err) {
     next(err);
@@ -276,7 +284,9 @@ async function getAcceptedAssets(req, res, next) {
 // GET /api/payments/overpayments
 async function getOverpayments(req, res, next) {
   try {
-    const overpayments = await Payment.find({ feeValidationStatus: 'overpaid' }).sort({ confirmedAt: -1 });
+    const overpayments = await Payment.find({ feeValidationStatus: 'overpaid' })
+      .sort({ confirmedAt: -1 })
+      .populate('studentId', 'name email studentRegNumber');
     const totalExcess = overpayments.reduce((sum, p) => sum + (p.excessAmount || 0), 0);
     res.json({ count: overpayments.length, totalExcess, overpayments });
   } catch (err) {
@@ -294,7 +304,7 @@ async function getStudentBalance(req, res, next) {
     }
 
     const result = await Payment.aggregate([
-      { $match: { studentId, status: 'SUCCESS' } },
+      { $match: { studentId: student._id, status: 'SUCCESS' } },
       { $group: { _id: null, totalPaid: { $sum: '$amount' }, count: { $sum: 1 } } },
     ]);
 
@@ -321,7 +331,9 @@ async function getStudentBalance(req, res, next) {
 // GET /api/payments/suspicious
 async function getSuspiciousPayments(req, res, next) {
   try {
-    const suspicious = await Payment.find({ isSuspicious: true }).sort({ confirmedAt: -1 });
+    const suspicious = await Payment.find({ isSuspicious: true })
+      .sort({ confirmedAt: -1 })
+      .populate('studentId', 'name email studentRegNumber');
     res.json({ count: suspicious.length, suspicious });
   } catch (err) {
     next(err);
@@ -331,7 +343,9 @@ async function getSuspiciousPayments(req, res, next) {
 // GET /api/payments/pending
 async function getPendingPayments(req, res, next) {
   try {
-    const pending = await Payment.find({ confirmationStatus: 'pending_confirmation' }).sort({ confirmedAt: -1 });
+    const pending = await Payment.find({ confirmationStatus: 'pending_confirmation' })
+      .sort({ confirmedAt: -1 })
+      .populate('studentId', 'name email studentRegNumber');
     res.json({ count: pending.length, pending });
   } catch (err) {
     next(err);
