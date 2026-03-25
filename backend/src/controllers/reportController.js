@@ -1,4 +1,5 @@
 const { generateReport, reportToCsv } = require('../services/reportService');
+const { get, set, KEYS, TTL } = require('../cache');
 
 /**
  * GET /api/reports
@@ -28,7 +29,12 @@ async function getReport(req, res, next) {
       return next(err);
     }
 
-    const report = await generateReport({ startDate, endDate });
+    const cacheKey = KEYS.report(startDate, endDate);
+    let report = get(cacheKey);
+    if (report === undefined) {
+      report = await generateReport({ startDate, endDate });
+      set(cacheKey, report, TTL.REPORT);
+    }
 
     if (format === 'csv') {
       const csv = reportToCsv(report);

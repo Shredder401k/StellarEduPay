@@ -1,28 +1,14 @@
 'use strict';
 
-const Payment = require('../models/paymentModel');
-const PaymentIntent = require('../models/paymentIntentModel');
-const Student = require('../models/studentModel');
-const { syncPayments, verifyTransaction, finalizeConfirmedPayments } = require('../services/stellarService');
 const crypto = require('crypto');
 const Payment = require('../models/paymentModel');
-const PaymentIntent = require('../models/paymentIntentModel');
-const Student = require('../models/studentModel');
-const {
-  syncPayments,
-  verifyTransaction,
-  recordPayment,
-  finalizeConfirmedPayments,
-} = require('../services/stellarService');
-const Student = require('../models/studentModel');
-const PaymentIntent = require('../models/paymentIntentModel');
-const { syncPayments, verifyTransaction, recordPayment, finalizeConfirmedPayments } = require('../services/stellarService');
 const PaymentIntent = require('../models/paymentIntentModel');
 const Student = require('../models/studentModel');
 const PendingVerification = require('../models/pendingVerificationModel');
 const { syncPayments, verifyTransaction, recordPayment, finalizeConfirmedPayments } = require('../services/stellarService');
 const { queueForRetry } = require('../services/retryService');
 const { SCHOOL_WALLET, ACCEPTED_ASSETS } = require('../config/stellarConfig');
+const { get, set, del, delByPrefix, KEYS, TTL } = require('../cache');
 
 // Permanent error codes that should NOT be retried
 const PERMANENT_FAIL_CODES = ['TX_FAILED', 'MISSING_MEMO', 'INVALID_DESTINATION', 'UNSUPPORTED_ASSET'];
@@ -139,46 +125,6 @@ async function verifyPayment(req, res, next) {
       });
     }
 
-    // Persist the verified payment
-    await recordPayment({
-      studentId: result.studentId,
-    } catch (err) {
-      const failCodes = ['TX_FAILED', 'MISSING_MEMO', 'INVALID_DESTINATION', 'UNSUPPORTED_ASSET'];
-      if (failCodes.includes(err.code)) {
-        // Record a failed payment for audit purposes
-        await Payment.create({
-          studentId: 'unknown',
-          txHash,
-          transactionHash: txHash,
-          amount: 0,
-          status: 'failed',
-          createdAt: new Date(),
-        }).catch(() => {});
-      if (PERMANENT_FAIL_CODES.includes(err.code)) {
-        // Permanently invalid — record as failed and surface the error
-        await Payment.create({ studentId: 'unknown', txHash, amount: 0, status: 'failed' }).catch(() => {});
-        return next(err);
-      }
-
-      // Transient Stellar network error — cache for retry so the tx is not lost
-      await queueForRetry(txHash, req.body.studentId || null, err.message);
-      return res.status(202).json({
-        message: 'Stellar network is temporarily unavailable. Your transaction has been queued and will be verified automatically once the network recovers.',
-        txHash,
-        status: 'queued_for_retry',
-      });
-    }
-
-    if (!result) {
-      return res.status(404).json({ error: 'Transaction not found or invalid' });
-    }
-
-    if (!result) {
-      const err = new Error('Transaction not found or invalid');
-      err.code = 'NOT_FOUND';
-      err.status = 404;
-      return next(err);
-    }
     const now = new Date();
 
     await recordPayment({
@@ -199,6 +145,19 @@ async function verifyPayment(req, res, next) {
       verifiedAt: now,                    // audit: when this endpoint was called
       confirmedAt: result.date ? new Date(result.date) : new Date(),
     });
+
+    // Invalidate caches affected by the new payment
+    const verifiedStudentId = result.studentId || result.memo;
+    del(
+      KEYS.balance(verifiedStudentId),
+      KEYS.payments(verifiedStudentId),
+      KEYS.student(verifiedStudentId),
+      KEYS.studentsAll(),
+      KEYS.overpayments(),
+      KEYS.suspicious(),
+      KEYS.pending(),
+    );
+    delByPrefix('report:');
 
     res.json({
       verified: true,
@@ -221,6 +180,11 @@ async function verifyPayment(req, res, next) {
 async function syncAllPayments(req, res, next) {
   try {
     await syncPayments();
+    // Sync may record new payments — invalidate payment-related caches
+    del(KEYS.overpayments(), KEYS.suspicious(), KEYS.pending());
+    delByPrefix('payments:');
+    delByPrefix('balance:');
+    delByPrefix('report:');
     res.json({ message: 'Sync complete' });
   } catch (err) {
     const wrapped = wrapStellarError(err);
@@ -234,6 +198,13 @@ async function syncAllPayments(req, res, next) {
 async function finalizePayments(req, res, next) {
   try {
     await finalizeConfirmedPayments();
+    // Finalization promotes pending → confirmed and updates student records
+    del(KEYS.pending(), KEYS.overpayments(), KEYS.suspicious());
+    delByPrefix('payments:');
+    delByPrefix('balance:');
+    delByPrefix('student:');
+    del(KEYS.studentsAll());
+    delByPrefix('report:');
     res.json({ message: 'Finalization complete' });
   } catch (err) {
     next(err);
@@ -243,7 +214,13 @@ async function finalizePayments(req, res, next) {
 // GET /api/payments/:studentId
 async function getStudentPayments(req, res, next) {
   try {
-    const payments = await Payment.find({ studentId: req.params.studentId }).sort({ confirmedAt: -1 });
+    const { studentId } = req.params;
+    const cacheKey = KEYS.payments(studentId);
+    const cached = get(cacheKey);
+    if (cached !== undefined) return res.json(cached);
+
+    const payments = await Payment.find({ studentId }).sort({ confirmedAt: -1 });
+    set(cacheKey, payments, TTL.PAYMENTS);
     res.json(payments);
   } catch (err) {
     next(err);
@@ -253,13 +230,19 @@ async function getStudentPayments(req, res, next) {
 // GET /api/payments/accepted-assets
 async function getAcceptedAssets(req, res, next) {
   try {
-    res.json({
+    const cacheKey = KEYS.acceptedAssets();
+    const cached = get(cacheKey);
+    if (cached !== undefined) return res.json(cached);
+
+    const data = {
       assets: Object.values(ACCEPTED_ASSETS).map(a => ({
         code: a.code,
         type: a.type,
         displayName: a.displayName,
       })),
-    });
+    };
+    set(cacheKey, data, TTL.ACCEPTED_ASSETS);
+    res.json(data);
   } catch (err) {
     next(err);
   }
@@ -268,9 +251,15 @@ async function getAcceptedAssets(req, res, next) {
 // GET /api/payments/overpayments
 async function getOverpayments(req, res, next) {
   try {
+    const cacheKey = KEYS.overpayments();
+    const cached = get(cacheKey);
+    if (cached !== undefined) return res.json(cached);
+
     const overpayments = await Payment.find({ feeValidationStatus: 'overpaid' }).sort({ confirmedAt: -1 });
     const totalExcess = overpayments.reduce((sum, p) => sum + (p.excessAmount || 0), 0);
-    res.json({ count: overpayments.length, totalExcess, overpayments });
+    const data = { count: overpayments.length, totalExcess, overpayments };
+    set(cacheKey, data, TTL.OVERPAYMENTS);
+    res.json(data);
   } catch (err) {
     next(err);
   }
@@ -280,6 +269,10 @@ async function getOverpayments(req, res, next) {
 async function getStudentBalance(req, res, next) {
   try {
     const { studentId } = req.params;
+    const cacheKey = KEYS.balance(studentId);
+    const cached = get(cacheKey);
+    if (cached !== undefined) return res.json(cached);
+
     const student = await Student.findOne({ studentId });
     if (!student) {
       return res.status(404).json({ error: 'Student not found', code: 'NOT_FOUND' });
@@ -296,7 +289,7 @@ async function getStudentBalance(req, res, next) {
       ? parseFloat((totalPaid - student.feeAmount).toFixed(7))
       : 0;
 
-    res.json({
+    const data = {
       studentId,
       feeAmount: student.feeAmount,
       totalPaid,
@@ -304,7 +297,9 @@ async function getStudentBalance(req, res, next) {
       excessAmount,
       feePaid: totalPaid >= student.feeAmount,
       installmentCount: result.length ? result[0].count : 0,
-    });
+    };
+    set(cacheKey, data, TTL.BALANCE);
+    res.json(data);
   } catch (err) {
     next(err);
   }
@@ -313,8 +308,14 @@ async function getStudentBalance(req, res, next) {
 // GET /api/payments/suspicious
 async function getSuspiciousPayments(req, res, next) {
   try {
+    const cacheKey = KEYS.suspicious();
+    const cached = get(cacheKey);
+    if (cached !== undefined) return res.json(cached);
+
     const suspicious = await Payment.find({ isSuspicious: true }).sort({ confirmedAt: -1 });
-    res.json({ count: suspicious.length, suspicious });
+    const data = { count: suspicious.length, suspicious };
+    set(cacheKey, data, TTL.SUSPICIOUS);
+    res.json(data);
   } catch (err) {
     next(err);
   }
@@ -323,8 +324,14 @@ async function getSuspiciousPayments(req, res, next) {
 // GET /api/payments/pending
 async function getPendingPayments(req, res, next) {
   try {
+    const cacheKey = KEYS.pending();
+    const cached = get(cacheKey);
+    if (cached !== undefined) return res.json(cached);
+
     const pending = await Payment.find({ confirmationStatus: 'pending_confirmation' }).sort({ confirmedAt: -1 });
-    res.json({ count: pending.length, pending });
+    const data = { count: pending.length, pending };
+    set(cacheKey, data, TTL.PENDING);
+    res.json(data);
   } catch (err) {
     next(err);
   }
@@ -360,6 +367,5 @@ module.exports = {
   getStudentBalance,
   getSuspiciousPayments,
   getPendingPayments,
-  finalizePayments,
   getRetryQueue,
 };
