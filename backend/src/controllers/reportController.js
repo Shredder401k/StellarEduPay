@@ -1,3 +1,5 @@
+'use strict';
+
 const { generateReport, reportToCsv } = require('../services/reportService');
 const { get, set, KEYS, TTL } = require('../cache');
 
@@ -5,14 +7,12 @@ const { get, set, KEYS, TTL } = require('../cache');
  * GET /api/reports
  * Query params: startDate, endDate, format (json|csv)
  *
- * Returns a payment summary report for the school.
- * Defaults to JSON; pass ?format=csv to get a downloadable CSV file.
+ * Returns a payment summary report scoped to the current school.
  */
 async function getReport(req, res, next) {
   try {
     const { startDate, endDate, format = 'json' } = req.query;
 
-    // Basic date validation
     if (startDate && isNaN(Date.parse(startDate))) {
       const err = new Error('Invalid startDate — must be a valid ISO date string (e.g. 2026-01-01)');
       err.code = 'VALIDATION_ERROR';
@@ -35,6 +35,8 @@ async function getReport(req, res, next) {
       report = await generateReport({ startDate, endDate });
       set(cacheKey, report, TTL.REPORT);
     }
+    // Pass schoolId so report is scoped to this school only
+    const report = await generateReport({ schoolId: req.schoolId, startDate, endDate });
 
     if (format === 'csv') {
       const csv = reportToCsv(report);
@@ -50,9 +52,6 @@ async function getReport(req, res, next) {
   }
 }
 
-/**
- * Build a descriptive filename for the CSV download.
- */
 function buildFilename(startDate, endDate) {
   const parts = ['school-payment-report'];
   if (startDate) parts.push(startDate);

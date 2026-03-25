@@ -1,22 +1,12 @@
 import { useState } from 'react';
 import { getStudent, getPaymentInstructions } from '../services/api';
 
-/**
- * Format an amount with its asset code for normalized display.
- * @param {number} amount
- * @param {string} assetCode
- * @returns {string}  e.g. "200.0000000 XLM" or "50.0000000 USDC"
- */
-function formatAssetAmount(amount, assetCode = 'XLM') {
-  return `${parseFloat(amount).toFixed(7)} ${assetCode}`;
-}
-
 export default function PaymentForm() {
-  const [studentId, setStudentId] = useState('');
-  const [student, setStudent] = useState(null);
+  const [studentId, setStudentId]       = useState('');
+  const [student, setStudent]           = useState(null);
   const [instructions, setInstructions] = useState(null);
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [error, setError]               = useState('');
+  const [loading, setLoading]           = useState(false);
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -36,9 +26,15 @@ export default function PaymentForm() {
     }
   }
 
+  const local    = instructions?.feeLocalEquivalent;
+  const rateTime = local?.rateTimestamp
+    ? new Date(local.rateTimestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : null;
+
   return (
     <div style={{ maxWidth: 480, margin: '2rem auto', fontFamily: 'sans-serif' }}>
       <h2>Pay School Fees</h2>
+
       <form onSubmit={handleSubmit}>
         <input
           type="text"
@@ -58,14 +54,38 @@ export default function PaymentForm() {
       {student && instructions && (
         <div style={{ marginTop: '1.5rem', background: '#f5f5f5', padding: '1rem', borderRadius: 8 }}>
           <p><strong>Student:</strong> {student.name} — Class {student.class}</p>
-          <p><strong>Required Fee:</strong> {student.feeAmount} XLM <span style={{ fontSize: '0.8rem', color: '#888' }}>(class fee)</span></p>
+
+          {/* Fee amount with local currency equivalent */}
+          <p style={{ margin: '0.4rem 0' }}>
+            <strong>Required Fee:</strong>{' '}
+            {instructions.feeAmount != null ? `${instructions.feeAmount} XLM` : `${student.feeAmount} XLM`}
+            {local && (
+              <span style={{ marginLeft: '0.5rem', color: '#2e7d32', fontWeight: 500 }}>
+                ≈ {local.amount.toFixed(2)} {local.currency}
+              </span>
+            )}
+          </p>
+
+          {/* Rate freshness note */}
+          {local && rateTime && (
+            <p style={{ margin: '0 0 0.4rem', fontSize: '0.75rem', color: '#999' }}>
+              Rate as of {rateTime} · 1 XLM = {local.rate.toFixed(4)} {local.currency}
+            </p>
+          )}
+          {!local && instructions.feeAmount != null && (
+            <p style={{ margin: '0 0 0.4rem', fontSize: '0.75rem', color: '#bbb' }}>
+              Local currency rate unavailable
+            </p>
+          )}
+
           <p><strong>Status:</strong> {student.feePaid ? '✅ Paid' : '❌ Unpaid'}</p>
           <hr />
+
           <p><strong>Send payment to:</strong></p>
           <code style={{ wordBreak: 'break-all' }}>{instructions.walletAddress}</code>
           <p><strong>Memo (required):</strong> <code>{instructions.memo}</code></p>
 
-          {instructions.acceptedAssets && instructions.acceptedAssets.length > 0 && (
+          {instructions.acceptedAssets?.length > 0 && (
             <div style={{ marginTop: '0.75rem', padding: '0.5rem', background: '#e8f5e9', borderRadius: 4 }}>
               <strong>Accepted Assets:</strong>
               <ul style={{ margin: '0.25rem 0 0 1rem', padding: 0 }}>
@@ -76,7 +96,9 @@ export default function PaymentForm() {
             </div>
           )}
 
-          <p style={{ fontSize: '0.85rem', color: '#555' }}>{instructions.note}</p>
+          <p style={{ fontSize: '0.85rem', color: '#555', marginTop: '0.75rem' }}>
+            {instructions.note}
+          </p>
         </div>
       )}
     </div>

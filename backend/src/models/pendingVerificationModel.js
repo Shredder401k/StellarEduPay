@@ -1,24 +1,32 @@
+'use strict';
+
 const mongoose = require('mongoose');
 
 /**
  * Stores transactions that could not be verified due to a Stellar network outage.
- * The retry service will pick these up and re-attempt verification once the
- * network is reachable again.
+ * schoolId is stored so the retry worker can use the correct school's Stellar
+ * wallet address when re-attempting verification.
  */
-const pendingVerificationSchema = new mongoose.Schema({
-  txHash: { type: String, required: true, unique: true, index: true },
-  studentId: { type: String, default: null },
-  attempts: { type: Number, default: 0 },
-  lastAttemptAt: { type: Date, default: null },
-  nextRetryAt: { type: Date, default: Date.now, index: true },
-  status: {
-    type: String,
-    enum: ['pending', 'processing', 'resolved', 'dead_letter'],
-    default: 'pending',
-    index: true,
+const pendingVerificationSchema = new mongoose.Schema(
+  {
+    schoolId:      { type: String, required: true, index: true },
+    txHash:        { type: String, required: true, unique: true, index: true },
+    studentId:     { type: String, default: null },
+    attempts:      { type: Number, default: 0 },
+    lastAttemptAt: { type: Date, default: null },
+    nextRetryAt:   { type: Date, default: Date.now, index: true },
+    status: {
+      type: String,
+      enum: ['pending', 'processing', 'resolved', 'dead_letter'],
+      default: 'pending',
+      index: true,
+    },
+    lastError:  { type: String, default: null },
+    resolvedAt: { type: Date, default: null },
   },
-  lastError: { type: String, default: null },
-  resolvedAt: { type: Date, default: null },
-}, { timestamps: true });
+  { timestamps: true }
+);
+
+pendingVerificationSchema.index({ schoolId: 1, status: 1, nextRetryAt: 1 });
 
 module.exports = mongoose.model('PendingVerification', pendingVerificationSchema);

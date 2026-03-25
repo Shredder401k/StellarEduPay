@@ -23,7 +23,7 @@ function validateRegisterStudent(req, res, next) {
   const { studentId, name, class: className } = req.body;
   const errors = [];
 
-  if (!validStudentId(studentId)) errors.push('studentId must be 3–20 alphanumeric characters');
+  if (studentId != null && !validStudentId(studentId)) errors.push('studentId must be 3–20 alphanumeric characters');
   if (!name || typeof name !== 'string' || !name.trim()) errors.push('name is required');
   if (!className || typeof className !== 'string' || !className.trim()) errors.push('class is required');
   if (req.body.feeAmount != null && !validPositiveNumber(req.body.feeAmount)) {
